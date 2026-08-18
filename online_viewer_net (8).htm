@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Steam Lua Generator</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+    body { background-color: #1b2838; color: #c6d4df; padding: 30px; display: flex; justify-content: center; }
+    .container { width: 100%; max-width: 800px; background: #171a21; padding: 25px; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+    h1 { color: #ffffff; margin-bottom: 20px; font-size: 22px; text-align: center; border-bottom: 1px solid #2a475e; padding-bottom: 10px; }
+    .status-box { padding: 12px; border-radius: 4px; margin-bottom: 15px; font-weight: bold; text-align: center; font-size: 14px; }
+    .loading { background: #2a475e; color: #66c0f4; }
+    .success { background: #223a26; color: #a3e06c; border: 1px solid #488a3a; }
+    .error { background: #3d1b1b; color: #f46666; border: 1px solid #8a3a3a; }
+    .btn-group { display: flex; gap: 10px; margin-bottom: 15px; }
+    button { flex: 1; padding: 10px; background: #5c7e10; border: none; border-radius: 4px; color: #fff; font-weight: bold; cursor: pointer; transition: 0.2s; }
+    button:hover { background: #79a314; }
+    button.secondary { background: #2a475e; }
+    button.secondary:hover { background: #3b607d; }
+    textarea { width: 100%; height: 320px; background: #0d121a; border: 1px solid #2a475e; color: #a3e06c; font-family: monospace; padding: 12px; border-radius: 4px; resize: vertical; }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <h1>Steam Lua Generator</h1>
+
+  <div id="status" class="status-box loading">GitHub uzak sunucusundan veriler çekiliyor...</div>
+
+  <div class="btn-group">
+    <button id="downloadBtn" onclick="downloadLua()" style="display:none;">Tekrar İndir</button>
+    <button id="copyBtn" onclick="copyToClipboard()" class="secondary" style="display:none;">İçeriği Kopyala</button>
+  </div>
+
+  <textarea id="output" readonly placeholder="Lua çıktısı bekleniyor..."></textarea>
+</div>
+
+<script>
+  // PUBLIC REPO KALICI RAW BAGLANTILARI
+  const APP_TOKENS_URL = 'https://raw.githubusercontent.com/atawq/uKeys/main/appaccesstokens.json';
+  const DEPOT_KEYS_URL = 'https://raw.githubusercontent.com/atawq/uKeys/main/depotkeys.json';
+
+  let currentAppId = "";
+  let generatedLuaContent = "";
+
+  async function fetchJson(url) {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`HTTP Hata: ${response.status}`);
+      return await response.json();
+    } catch (e) {
+      console.error(`Veri çekilemedi: ${url}`, e);
+      return null;
+    }
+  }
+
+  function findDepotsForAppId(appIdStr, depotKeys, appTokens) {
+    const depotInfo = {};
+
+    // 1. depotkeys Taraması
+    if (depotKeys) {
+      if (typeof depotKeys === 'object' && !Array.isArray(depotKeys)) {
+        if (depotKeys[appIdStr] && typeof depotKeys[appIdStr] === 'object') {
+          for (const [depId, val] of Object.entries(depotKeys[appIdStr])) {
+            const key = typeof val === 'string' ? val : val.key;
+            const manifest = typeof val === 'object' ? val.manifest : null;
+            depotInfo[String(depId)] = { key, manifest };
+          }
+        }
+
+        for (const [depId, val] of Object.entries(depotKeys)) {
+          const depStr = String(depId);
+          if (depStr.startsWith(appIdStr) || depStr === appIdStr) {
+            if (!depotInfo[depStr]) depotInfo[depStr] = { key: null, manifest: null };
+            if (typeof val === 'string') {
+              depotInfo[depStr].key = val;
+            } else if (typeof val === 'object' && val !== null) {
+              depotInfo[depStr].key = val.key || val.decryption_key || null;
+              if (val.manifest) depotInfo[depStr].manifest = String(val.manifest);
+            }
+          }
+        }
+      } else if (Array.isArray(depotKeys)) {
+        for (const item of depotKeys) {
+          if (typeof item === 'object' && item !== null) {
+            const depStr = String(item.depot_id || item.id || '');
+            if (depStr.startsWith(appIdStr) || String(item.app_id) === appIdStr) {
+              if (!depotInfo[depStr]) depotInfo[depStr] = { key: null, manifest: null };
+              depotInfo[depStr].key = item.key || item.decryption_key || null;
+            }
+          }
+        }
+      }
+    }
+
+    // 2. appaccestokens Taraması
+    if (appTokens && typeof appTokens === 'object') {
+      if (appTokens[appIdStr] && typeof appTokens[appIdStr] === 'object') {
+        for (const [depId, manifestVal] of Object.entries(appTokens[appIdStr])) {
+          const depStr = String(depId);
+          if (!depotInfo[depStr]) depotInfo[depStr] = { key: null, manifest: null };
+          if (typeof manifestVal === 'string' || typeof manifestVal === 'number') {
+            depotInfo[depStr].manifest = String(manifestVal);
+          } else if (typeof manifestVal === 'object' && manifestVal !== null) {
+            depotInfo[depStr].manifest = String(manifestVal.manifest || manifestVal.manifest_id || '');
+          }
+        }
+      }
+
+      for (const [depId, val] of Object.entries(appTokens)) {
+        const depStr = String(depId);
+        if (depStr.startsWith(appIdStr)) {
+          if (!depotInfo[depStr]) depotInfo[depStr] = { key: null, manifest: null };
+          if (typeof val === 'string' || typeof val === 'number') {
+            depotInfo[depStr].manifest = String(val);
+          } else if (typeof val === 'object' && val !== null && val.manifest) {
+            depotInfo[depStr].manifest = String(val.manifest);
+          }
+        }
+      }
+    }
+
+    return depotInfo;
+  }
+
+  function downloadLua() {
+    if (!generatedLuaContent) return;
+    const blob = new Blob([generatedLuaContent], { type: 'text/plain;charset=utf-8' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `${currentAppId}.lua`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(link.href);
+  }
+
+  function copyToClipboard() {
+    navigator.clipboard.writeText(generatedLuaContent);
+    alert("Lua içeriği panoya kopyalandı!");
+  }
+
+  async function init() {
+    const statusEl = document.getElementById('status');
+    const outputEl = document.getElementById('output');
+
+    // URL'den appid parametresini okuma
+    const urlParams = new URLSearchParams(window.location.search);
+    currentAppId = urlParams.get('appid');
+
+    if (!currentAppId || isNaN(currentAppId)) {
+      statusEl.className = "status-box error";
+      statusEl.innerText = "Hata: Geçerli bir AppID girilmedi! Örn: generate.html?appid=227300";
+      return;
+    }
+
+    // JSON Verilerini Çekme
+    const [appTokensData, depotKeysData] = await Promise.all([
+      fetchJson(APP_TOKENS_URL),
+      fetchJson(DEPOT_KEYS_URL)
+    ]);
+
+    if (!depotKeysData && !appTokensData) {
+      statusEl.className = "status-box error";
+      statusEl.innerText = "Hata: GitHub'dan veri çekilemedi.";
+      return;
+    }
+
+    // Lua Metni Oluşturma
+    const depots = findDepotsForAppId(currentAppId, depotKeysData, appTokensData);
+    const sortedDepotIds = Object.keys(depots).sort((a, b) => (parseInt(a) || a) - (parseInt(b) || b));
+
+    const luaLines = [`addappid(${currentAppId})`];
+    let countKeys = 0;
+    let countManifests = 0;
+
+    for (const depId of sortedDepotIds) {
+      const info = depots[depId];
+      if (info.key && info.key !== "0") {
+        luaLines.push(`addappid(${depId},0,"${info.key}")`);
+        countKeys++;
+      } else {
+        luaLines.push(`addappid(${depId})`);
+      }
+
+      if (info.manifest) {
+        luaLines.push(`setManifestid(${depId},"${info.manifest}")`);
+        countManifests++;
+      }
+    }
+
+    generatedLuaContent = luaLines.join('\n') + '\n';
+    outputEl.value = generatedLuaContent;
+
+    statusEl.className = "status-box success";
+    statusEl.innerText = `✓ ${currentAppId}.lua oluşturuldu ve indirme başlatıldı! | Depot: ${sortedDepotIds.length} | Key: ${countKeys} | Manifest: ${countManifests}`;
+
+    document.getElementById('downloadBtn').style.display = "inline-block";
+    document.getElementById('copyBtn').style.display = "inline-block";
+
+    // OTOMATİK İNDİRME TETİKLEYİCİSİ
+    downloadLua();
+  }
+
+  window.onload = init;
+</script>
+
+</body>
+</html>
